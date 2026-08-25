@@ -8,7 +8,9 @@ from pypdf import PdfReader
 from google import genai
 from google.genai import types
 
-# Cấu hình giao diện Streamlit chuẩn iPad / Web
+# ----------------------------------------------------
+# 1. CẤU HÌNH GIAO DIỆN STREAMLIT
+# ----------------------------------------------------
 st.set_page_config(
     page_title="Trường Học Số Lớp 7 - AI Virtual Classroom",
     page_icon="🏫",
@@ -16,16 +18,16 @@ st.set_page_config(
 )
 
 # ----------------------------------------------------
-# 1. CẤU HÌNH API KEYS & THÔNG TIN HỆ THỐNG
+# 2. CẤU HÌNH API KEYS & BIẾN MÔI TRƯỜNG
 # ----------------------------------------------------
 api_key = st.secrets.get("GEMINI_API_KEY", os.getenv("GEMINI_API_KEY"))
-gdrive_folder_id = st.secrets.get("GDRIVE_FOLDER_ID", os.getenv("GDRIVE_FOLDER_ID"))
+gdrive_folder_id = st.secrets.get("GDRIVE_FOLDER_ID", os.getenv("GDRIVE_FOLDER_ID", "1SFtX3w6EgF6MzwrRrhG9WgYy056ikJ_X"))
 did_api_key = st.secrets.get("DID_API_KEY", os.getenv("DID_API_KEY"))
 
 if not api_key:
     api_key = st.sidebar.text_input("🔑 Nhập Gemini API Key:", type="password")
     if not api_key:
-        st.warning("Vui lòng cấu hình GEMINI_API_KEY để bắt đầu!")
+        st.warning("⚠️ Vui lòng cấu hình GEMINI_API_KEY để bắt đầu!")
         st.stop()
 
 if not gdrive_folder_id:
@@ -34,50 +36,72 @@ if not gdrive_folder_id:
 client = genai.Client(api_key=api_key)
 
 # ----------------------------------------------------
-# 2. ĐỒNG BỘ SGK & PPCT TỪ GOOGLE DRIVE
+# 3. ĐỒNG BỘ TÀI LIỆU SGK & PPCT TỪ GOOGLE DRIVE
 # ----------------------------------------------------
 DATA_DIR = "./data_gdrive"
 
-@st.cache_resource(show_spinner="⏳ Đang mở kho sách & Phân phối chương trình từ Google Drive...")
+@st.cache_resource(show_spinner="⏳ Đang đồng bộ SGK & Phân phối chương trình từ Google Drive...")
 def sync_sgk_from_drive(folder_id):
     if not folder_id:
         return ""
-    if not os.path.exists(DATA_DIR):
-        os.makedirs(DATA_DIR)
-        url = f"https://drive.google.com/drive/folders/{folder_id}"
-        try:
-            gdown.download_folder(url, output=DATA_DIR, quiet=True, use_cookies=False)
-        except Exception as e:
-            st.sidebar.error(f"Lỗi tải từ Google Drive: {e}")
-            return ""
     
+    os.makedirs(DATA_DIR, exist_ok=True)
+    
+    # Kiểm tra xem trong thư mục đã có file PDF chưa
+    existing_pdfs = []
+    for root, _, files in os.walk(DATA_DIR):
+        for f in files:
+            if f.lower().endswith(".pdf"):
+                existing_pdfs.append(os.path.join(root, f))
+                
+    # Nếu chưa có file nào thì tiến hành tải từ Google Drive
+    if not existing_pdfs:
+        try:
+            # Tải thư mục Google Drive theo folder_id
+            gdown.download_folder(
+                id=folder_id,
+                output=DATA_DIR,
+                quiet=True,
+                use_cookies=False,
+                remaining_ok=True
+            )
+        except Exception as e:
+            st.sidebar.error(f"Lỗi khi tải từ Google Drive: {e}")
+
+    # Quét đọc toàn bộ file PDF (bao gồm cả các thư mục con nếu có)
     extracted_text = ""
-    for file_name in os.listdir(DATA_DIR):
-        if file_name.lower().endswith(".pdf"):
-            pdf_path = os.path.join(DATA_DIR, file_name)
-            try:
-                reader = PdfReader(pdf_path)
-                extracted_text += f"\n--- TÀI LIỆU: {file_name} ---\n"
-                for page in reader.pages[:25]:  # Đọc trích dẫn đầu mỗi tài liệu
-                    t = page.extract_text()
-                    if t: 
-                        extracted_text += t + "\n"
-            except Exception:
-                continue
+    file_count = 0
+    for root, _, files in os.walk(DATA_DIR):
+        for file_name in files:
+            if file_name.lower().endswith(".pdf"):
+                file_count += 1
+                pdf_path = os.path.join(root, file_name)
+                try:
+                    reader = PdfReader(pdf_path)
+                    extracted_text += f"\n--- TÀI LIỆU: {file_name} ---\n"
+                    # Đọc 25 trang đầu của mỗi tài liệu để lấy mục lục, PPCT và kiến thức trọng tâm
+                    max_pages = min(25, len(reader.pages))
+                    for page_idx in range(max_pages):
+                        page_text = reader.pages[page_idx].extract_text()
+                        if page_text:
+                            extracted_text += page_text + "\n"
+                except Exception:
+                    continue
+
     return extracted_text
 
 sgk_text = sync_sgk_from_drive(gdrive_folder_id) if gdrive_folder_id else ""
 
 # ----------------------------------------------------
-# 3. HÀM TẠO VIDEO GIÁO VIÊN ẢO (D-ID API)
+# 4. HÀM TẠO VIDEO GIÁO VIÊN ẢO (D-ID API)
 # ----------------------------------------------------
 def generate_teacher_video(script_text):
     """Gửi kịch bản bài giảng sang D-ID để tạo video cô giáo giảng bài"""
     if not did_api_key:
-        st.info("💡 Bạn chưa điền DID_API_KEY trong Secrets/Sidebar nên tính năng video chưa bật.")
+        st.info("💡 Chưa cấu hình DID_API_KEY trong Secrets/Sidebar nên tính năng video chưa bật.")
         return None
 
-    # Rút gọn kịch bản dưới 280 ký tự để video render nhanh và mượt mà
+    # Rút gọn kịch bản dưới 260 ký tự để render nhanh và mượt mà
     clean_script = script_text.replace("*", "").replace("#", "").replace("-", " ")[:260]
 
     url = "https://api.d-id.com/talks"
@@ -126,7 +150,7 @@ def generate_teacher_video(script_text):
         return None
 
 # ----------------------------------------------------
-# 4. THANH ĐIỀU HƯỚNG BÊN TRÁI (SIDEBAR)
+# 5. THANH ĐIỀU HƯỚNG BÊN TRÁI (SIDEBAR)
 # ----------------------------------------------------
 st.sidebar.title("🏫 Trường Học Số Lớp 7")
 
@@ -148,7 +172,7 @@ lesson_name = st.sidebar.text_input("Tên bài học / Tiết dạy:", placehold
 if sgk_text:
     st.sidebar.success("✅ Đã kết nối SGK & PPCT từ Drive")
 else:
-    st.sidebar.info("ℹ️ Chưa tải được file SGK từ Drive")
+    st.sidebar.info("ℹ️ Đang dùng AI gốc (Chưa nạp tài liệu Drive)")
 
 if st.sidebar.button("🗑️ Làm mới / Đổi bài học"):
     st.session_state.messages = []
