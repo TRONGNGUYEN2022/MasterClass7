@@ -63,7 +63,6 @@ def sync_sgk_from_drive(folder_id):
                 output=DATA_DIR,
                 quiet=True,
                 use_cookies=False,
-                remaining_ok=True
             )
         except Exception as e:
             st.sidebar.error(f"Lỗi khi tải từ Google Drive: {e}")
